@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "asset": "generic_tropes",
+  "record_count": 3409,
+  "files": [
+    "tropes_biz.json",
+    "tropes_combat.json",
+    "tropes_life.json",
+    "tropes_mystery.json",
+    "tropes_romance.json"
+  ],
+  "fields": [
+    "id",
+    "cat",
+    "sub",
+    "name",
+    "summary",
+    "trigger",
+    "choice_styles",
+    "reaction",
+    "converge",
+    "K",
+    "src"
+  ],
+  "choice_styles": [
+    "强硬",
+    "隐忍",
+    "智取",
+    "示弱",
+    "反将",
+    "借势",
+    "试探",
+    "斡旋",
+    "收买"
+  ],
+  "placeholders": [],
+  "source": "通用化桥段库；不携带具体作品、角色、地点或情节信息"
+}
