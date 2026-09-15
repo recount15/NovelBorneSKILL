@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+novelborne-data/
+.key
+state.json
+.lock
+.state-*.tmp
+checkpoints/
+.env
+.env.*
+.runtime-test-*/

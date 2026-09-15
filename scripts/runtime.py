@@ -30,6 +30,9 @@ import sys
 import tempfile
 import uuid
 
+if __name__ == "__main__":
+    sys.modules["runtime"] = sys.modules[__name__]
+
 # Faithful constants and exact strip/case-sensitive matching from upstream.
 WISH_CODE = "UUDDLLRRBABAWHOSLOMSTINGNOTALADDIN"
 RELAY_CODE = "RELINKBACKLOMSTINGSEEYAGOODAFTERNOONGOODEVENINGANDGOODNIGHTBLACKSHEEPWALL"
@@ -64,7 +67,9 @@ PROTECTED = {
     "anchors_disabled", "anchor_distillation_disabled", "distill_status",
     "anchors_shattered_from", "config_locked", "locked_config_sha256",
     "difficulty", "mode", "convergence", "paper_tier", "story_agent_mode",
-    "source_index", "version", "setup", "semantic_coverage",
+    "source_index", "version", "setup", "semantic_coverage", "preparation", "pipeline",
+    "pipeline_token", "mechanical", "ripple_total", "chapter_turn", "setup_confirmed",
+    "gf_confirmed", "cast_confirmed", "issued", "chunks", "proposed_mechanical", "last_turn_audit",
 }
 PROTECTED_NORMALIZED = {re.sub(r"[^a-z0-9]", "", key.lower()) for key in PROTECTED}
 MAX_SOURCE = 32 * 1024 * 1024
@@ -310,23 +315,34 @@ def validate_config(config, index):
     require(cfg["mode"] != "基础模式" or cfg["paper_tier"] <= 4, "basic_tier_limit")
     require(cfg["paper_tier"] != 6 or cfg["story_agent_mode"], "tier6_requires_story_agent_mode")
     for key in ("protagonist", "source"):
-        shape(cfg[key], ("name", "description") if key == "protagonist" else ("title", "description"))
+        shape(cfg[key], ("name", "description") if key == "protagonist" else ("title", "description"),
+              ("origin",) if key == "protagonist" else ())
         for value in cfg[key].values():
             string(value)
         protected_data(cfg[key])
     require(type(cfg["characters"]) is list and len(cfg["characters"]) <= 100, "invalid_characters")
+    cfg["protagonist"].setdefault("origin", "original")
+    require(cfg["protagonist"]["origin"] in ("source", "original"), "invalid_character_origin")
+    names = {cfg["protagonist"]["name"]}
     for character in cfg["characters"]:
-        shape(character, ("name", "description"))
+        shape(character, ("name", "description"), ("role", "origin"))
+        character.setdefault("role", "support")
+        character.setdefault("origin", "source")
+        require(character["role"] in ("companion", "partner", "nemesis", "support"), "invalid_character_role")
+        require(character["origin"] in ("source", "original"), "invalid_character_origin")
         for value in character.values():
             string(value)
         protected_data(character)
+        require(character["name"] not in names, "duplicate_character_name")
+        names.add(character["name"])
     shape(cfg["gf"], ("name", "effect", "scope", "cost", "cooldown", "limits"))
     for value in cfg["gf"].values():
         string(value)
         protected_data(value)
     defaults = {"target_chapter": index["chapters"][0]["id"], "relative_time": "during",
                 "fragment": "", "protagonist_gender": "unknown", "companions": 0, "partners": 0,
-                "nemesis": False, "style": "", "preparation_mode": "window", "semantic_coverage": []}
+                "nemesis": False, "style": "", "preparation_mode": "fullbook" if cfg["mode"] == "强化模式" else "window",
+                "semantic_coverage": []}
     setup = cfg.get("setup", {})
     shape(setup, (), defaults)
     setup = {**defaults, **setup}
@@ -346,8 +362,11 @@ def validate_config(config, index):
     coverage = setup["semantic_coverage"]
     require(type(coverage) is list and all(type(c) is str and c in ids for c in coverage), "invalid_coverage")
     require(len(set(coverage)) == len(coverage), "duplicate_coverage")
-    require(not (cfg["mode"] == "强化模式" and setup["preparation_mode"] == "fullbook")
-            or set(coverage) == ids, "fullbook_coverage_incomplete")
+    require(not coverage, "self_reported_coverage_forbidden_use_distill")
+    require(cfg["mode"] != "强化模式" or setup["preparation_mode"] == "fullbook", "enhanced_requires_fullbook")
+    for role, count in (("companion", setup["companions"]), ("partner", setup["partners"]),
+                        ("nemesis", int(setup["nemesis"]))):
+        require(sum(c["role"] == role for c in cfg["characters"]) == count, "configured_cast_count_mismatch")
     cfg["setup"] = setup
     return cfg
 
@@ -379,7 +398,7 @@ def create(root, config, prepared):
     identifier = str(uuid.uuid4())
     session = root / identifier
     session.mkdir(exist_ok=False)
-    state = {"version": 1, "session_id": identifier, "phase": "awaiting_opening", "revision": 0,
+    state = {"version": 2, "session_id": identifier, "phase": "awaiting_opening", "revision": 0,
              "turn": 0, "config": cfg, "config_locked": False, "locked_config_sha256": None,
              "source_index": index, "options": [], "pending_action": None,
              "cheats": {"wish": {"armed": False, "used_count": 0, "limit": 3},
@@ -387,6 +406,10 @@ def create(root, config, prepared):
              "anchors_disabled": False, "anchor_distillation_disabled": False,
              "world": {"wish_facts": [], "relay_facts": [], "narrative_ledger": []}, "events": []}
     try:
+        import preparation
+        import turns
+        preparation.initialize(state)
+        turns.initialize(state)
         key = secrets.token_bytes(32)
         write_new(session / ".key", key)
         try:
@@ -428,7 +451,7 @@ def load_session(directory):
     require(type(state) is dict and type(envelope["signature"]) is str, "invalid_signed_state")
     signature = hmac.new(key, canonical(state), hashlib.sha256).hexdigest()
     require(hmac.compare_digest(envelope["signature"], signature), "state_signature_mismatch")
-    require(state.get("version") == 1 and state.get("session_id") == directory.name, "session_identity_mismatch")
+    require(state.get("version") in (1, 2) and state.get("session_id") == directory.name, "session_identity_mismatch")
     if state.get("config_locked"):
         require(state["locked_config_sha256"] == sha(canonical(state["config"])), "locked_config_mismatch")
     return state, key
@@ -437,6 +460,7 @@ def load_session(directory):
 def transaction(session, operation):
     with locked(session) as directory:
         state, key = load_session(directory)
+        require(state["version"] == 2, "legacy_session_readonly_export_or_use_v1")
         before = canonical(state)
         result = operation(state)
         if canonical(state) != before:
@@ -449,6 +473,10 @@ def confirm(session, text):
     def operation(state):
         require(text == "确认开局", "exact_opening_confirmation_required")
         require(state["phase"] == "awaiting_opening", "already_confirmed")
+        import preparation
+        preparation.ready(state)
+        _, index = prepared_data(session)
+        require(index == state["source_index"], "signed_source_index_mismatch")
         state["config_locked"] = True
         state["locked_config_sha256"] = sha(canonical(state["config"]))
         state["phase"] = "playing"
@@ -478,8 +506,14 @@ def sanitize_fact(text):
 
 
 def ask(session, path):
-    question = text_file(path).strip()
+    return ask_text(session, text_file(path))
+
+
+def ask_text(session, text, based_revision=None):
+    question = text.strip()
     def operation(state):
+        if based_revision is not None:
+            require(state["revision"] == based_revision, "stale_revision")
         require(state["phase"] == "playing", "opening_not_confirmed")
         cheats, world = state["cheats"], state["world"]
         wish = cheats["wish"]
@@ -527,9 +561,20 @@ def ask(session, path):
 
 
 def action(session, path):
-    text = text_file(path).strip()
-    if text.startswith("行动："):
-        text = text[len("行动："):].strip()
+    return action_text(session, text_file(path))
+
+
+def action_text(session, body, based_revision=None):
+    text = body.strip()
+    explicit = text.startswith(("行动：", "行动:"))
+    if explicit:
+        text = text[3:].strip()
+    elif text.startswith(("选择：", "选择:")):
+        text = text[3:].strip()
+    elif text.startswith("选择"):
+        text = text[2:].strip()
+    require(explicit or re.fullmatch(r"[A-F](?:[\s,，、+;/和与及]*[A-F])*(?:\s*[:：].+)?", text, re.S),
+            "ambiguous_input_use_input_router")
     string(text, 4000)
     # Codes have no power outside ask, even embedded within an ordinary action.
     require(not INJECTION.search(text), "action_instruction_injection")
@@ -539,8 +584,12 @@ def action(session, path):
                           r"\b(?:difficulty|turn|cooldown|cheat|revision|mechanic)\b", text, re.I),
             "action_mechanism_request")
     def operation(state):
+        if based_revision is not None:
+            require(state["revision"] == based_revision, "stale_revision")
         require(state["phase"] == "playing" and len(state["options"]) == 6, "action_requires_opening_options")
         require(state["pending_action"] is None, "action_already_pending")
+        import turns
+        turns.require_action_budget(state)
         # IDs must be explicit tokens. E.g. A,C plus optional free intent.
         option_match = re.fullmatch(r"([A-F](?:[\s,，、+;/和与及]*[A-F])*)(?:\s*[:：]\s*(.+))?", text, re.S)
         selected = re.findall(r"[A-F]", option_match.group(1)) if option_match else []
@@ -562,7 +611,7 @@ def action(session, path):
 
 
 def validate_draft(draft, state):
-    shape(draft, ("expected_revision", "text", "options", "summary", "source_refs", "world_updates"))
+    shape(draft, ("expected_revision", "text", "options", "summary", "source_refs", "world_updates"), ("pipeline_token",))
     integer(draft["expected_revision"], 0, 2**53)
     require(draft["expected_revision"] == state["revision"], "stale_revision")
     string(draft["text"], 30000)
@@ -604,8 +653,11 @@ def commit(session, path):
         require(state["phase"] == "playing", "opening_not_confirmed")
         require(state["turn"] == 0 or state["pending_action"] is not None, "pending_action_required")
         validate_draft(draft, state)
+        import turns
+        turns.commit_ready(state, draft)
         event = {"type": "narrative", "turn": state["turn"] + 1,
-                 "intent": copy.deepcopy(state["pending_action"]), **copy.deepcopy(draft)}
+                 "intent": copy.deepcopy(state["pending_action"]),
+                 "audit": copy.deepcopy(state["last_turn_audit"]), **copy.deepcopy(draft)}
         state["events"].append(event)
         state["turn"] += 1
         state["options"] = copy.deepcopy(draft["options"])
@@ -631,8 +683,10 @@ def redact(value):
 def status(session):
     with locked(session) as directory:
         state, _ = load_session(directory)
+        import preparation
         return {"state": redact(state), "security": "local_edit_detection_not_local_attacker_protection",
-                "mechanics": "not_simulated; narrative_ledger_is_model_authored_data"}
+                "preparation": preparation.progress(state) if state["version"] == 2 else {"legacy_readonly": True},
+                "mechanics": "formula_results_committed; classifications_and_story_semantics_model_authored"}
 
 
 def export(session, out):
@@ -692,15 +746,28 @@ def parser():
     p.add_argument("--root", required=True)
     p.add_argument("--config", required=True)
     p.add_argument("--prepared", required=True)
-    for command in ("confirm", "ask", "action", "commit", "status", "export", "checkpoint"):
+    for command in ("confirm", "ask", "action", "input", "commit", "status", "export", "checkpoint",
+                    "source-window", "distill", "setup-confirm", "gf-confirm", "card", "cast-confirm",
+                    "revise", "context", "plan", "stage", "review", "render", "advance", "doctor", "template"):
         p = commands.add_parser(command)
         p.add_argument("--session", required=True)
-        if command == "confirm":
+        if command in ("confirm", "setup-confirm", "gf-confirm", "cast-confirm", "advance"):
             p.add_argument("--text", required=True)
-        elif command in ("ask", "action"):
+        elif command in ("ask", "action", "input"):
             p.add_argument("--text-file", required=True)
-        elif command == "commit":
+        elif command in ("commit", "stage"):
             p.add_argument("--draft", required=True)
+        elif command in ("distill", "card", "revise", "plan", "review"):
+            p.add_argument("--input", dest="path", required=True)
+        elif command == "source-window":
+            p.add_argument("--chapter", required=True)
+            p.add_argument("--start", type=int, default=0)
+            p.add_argument("--limit", type=int, default=2000)
+        elif command == "context":
+            p.add_argument("--fresh", action="store_true")
+        elif command == "template":
+            p.add_argument("--kind", choices=("card", "distill", "plan", "draft", "review"), required=True)
+            p.add_argument("--name")
         elif command == "export":
             p.add_argument("--out", required=True)
         elif command == "checkpoint":
@@ -715,13 +782,23 @@ def main(argv=None):
         args["path"] = args.pop("text_file")
     if "draft" in args:
         args["path"] = args.pop("draft")
+    import preparation
+    import turns
+    import interaction
+    import guidance
     dispatch = {"prepare": prepare, "read-source": read_source, "create": create, "confirm": confirm,
                 "ask": ask, "action": action, "commit": commit, "status": status, "export": export,
-                "checkpoint": checkpoint}
+                "checkpoint": checkpoint, "input": interaction.receive, "revise": interaction.revise,
+                "source-window": preparation.source_window, "distill": preparation.distill,
+                "setup-confirm": preparation.setup_confirm, "gf-confirm": preparation.gf_confirm,
+                "card": preparation.card, "cast-confirm": preparation.cast_confirm,
+                "context": turns.context, "plan": turns.plan, "stage": turns.stage,
+                "review": turns.review, "render": turns.render, "advance": turns.advance,
+                "doctor": guidance.doctor, "template": guidance.template}
     try:
         result = dispatch[command](**args)
         # Source windows are exact untrusted data, never transformed or filtered.
-        output = result if command == "read-source" else redact(result)
+        output = result if command in ("read-source", "source-window") else redact(result)
         print(json.dumps({"ok": True, **output}, ensure_ascii=False))
         return 0
     except (RuntimeError_, OSError, UnicodeError, TypeError, KeyError, RecursionError) as exc:
