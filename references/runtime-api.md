@@ -234,3 +234,19 @@ python -X utf8 "<SKILL>/scripts/mechanics.py" tropes --query "渡口,追踪" --l
 - faction：members 必填（最多3），可选 opposing_members（最多3）、protagonist_power 整数0–4、genre、player_difficulty 整数1–9。成员可含 name/description/skill/background/role，power或influence 整数0–4，scope或scope_coefficient 0–1.5，permanence或residency 0–1，不能重复使用别名。
 - gf 的 difficulty 为宿敌 D，0.01–9.99，不直接当玩家 D。
 - tropes 可选 cat 为库内实际分类、style 为强硬/隐忍/智取/示弱/反将/借势/试探/斡旋/收买；limit 1–50。素材只借结构，不是原文事实。
+
+## 8. GUI 桥命令（`FATE_SKILL_BRIDGE=1` 时）
+
+原版界面以桥模式运行时，其全部模型调用落成任务文件，由助手应答。三条命令：
+
+```text
+python -X utf8 "<SKILL>/scripts/runtime.py" bridge-pending --wait 20
+python -X utf8 "<SKILL>/scripts/runtime.py" bridge-show --job "<id>"
+python -X utf8 "<SKILL>/scripts/runtime.py" bridge-respond --job "<id>" --file "<回复.txt>"
+```
+
+- `bridge-pending`：`--wait` 秒内轮询等待；返回 `[{id, mode, model, stream, created, prompt_chars, preview, request_file}]`。`--var-dir` 可显式指定任务目录，缺省按 `FATE_VAR_DIR` 或向上查找 `run_app.py` 标记自动发现（即 `<APP>/var/bridge/jobs`）。
+- `bridge-show --job`：打印该任务完整请求 JSON（含 messages 与格式要求）。
+- `bridge-respond --job`：三选一——`--file`（UTF-8 无 BOM 文件，推荐，中文必用）、`--text`（短 ASCII）、`--error`（回错，界面会提示失败可重试）。写入原子生效，请求方轮询取走后归档到 `bridge/done/`。
+- 应答格式以请求提示词为准：角色安排师/选项生成卷等结构化任务收严格 JSON（无代码围栏）；开局核对与回合正文收纯文本（正文不含选项/日志段）。请求方默认等待 30 分钟（`FATE_BRIDGE_TIMEOUT` 秒可调，下限 60）。
+- 桥模式下所有凭据门禁放行：不配置 API key，不触碰界面"AI 配置"页。

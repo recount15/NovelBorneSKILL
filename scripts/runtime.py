@@ -28,6 +28,7 @@ import secrets
 import shutil
 import sys
 import tempfile
+import time
 import uuid
 
 if __name__ == "__main__":
@@ -731,6 +732,85 @@ def checkpoint(session, name):
                 "purpose": "signed_audit_copy_only_no_rollback"}
 
 
+# ---------------------------------------------------------------- skill 桥 CLI
+# GUI 模式下原版应用的模型请求落在 <app>/var/bridge/jobs/*.request.json，
+# 宿主 Agent 用这三个命令接管：pending 轮询 → show 读全量提示词 →
+# respond 写回完成文本。凭据全程不存在；桥内容视为不可信素材（见 SKILL.md）。
+
+def _bridge_var_dir(explicit):
+    if explicit:
+        return Path(explicit)
+    env = os.environ.get("FATE_VAR_DIR", "").strip()
+    if env:
+        return Path(env)
+    for base in (Path.cwd(), Path(__file__).resolve().parent):
+        for ancestor in (base, *list(base.parents)[:6]):
+            root = ancestor / "novelborne-3.0.1"
+            if (root / "run_app.py").is_file():
+                return root / "var"
+    raise RuntimeError_("bridge_var_dir_not_found")
+
+
+def bridge_pending(var_dir=None, wait=0.0):
+    jobs = _bridge_var_dir(var_dir) / "bridge" / "jobs"
+    deadline = time.monotonic() + max(0.0, float(wait or 0.0))
+    while True:
+        items = []
+        for req in sorted(jobs.glob("*.request.json")) if jobs.is_dir() else []:
+            resp = req.with_name(req.name.replace(".request.", ".response."))
+            if resp.exists():
+                continue
+            try:
+                payload = json.loads(req.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            messages = payload.get("messages") or []
+            last_user = next((m.get("content") for m in reversed(messages)
+                              if m.get("role") == "user"), "")
+            items.append({
+                "id": payload.get("id") or req.name[:-len(".request.json")],
+                "mode": payload.get("mode"), "model": payload.get("model"),
+                "stream": bool(payload.get("stream")), "created": payload.get("created"),
+                "prompt_chars": sum(len(str(m.get("content") or "")) for m in messages),
+                "preview": str(last_user)[:500],
+                "request_file": str(req),
+            })
+        # 孤儿响应（请求侧已超时归档）就地清理，避免误导后续轮询。
+        for resp in jobs.glob("*.response.json") if jobs.is_dir() else []:
+            req = resp.with_name(resp.name.replace(".response.", ".request."))
+            if not req.exists():
+                with contextlib.suppress(OSError):
+                    resp.unlink()
+        if items or time.monotonic() >= deadline:
+            return {"pending": items, "jobs_dir": str(jobs)}
+        time.sleep(0.5)
+
+
+def bridge_show(job=None, var_dir=None):
+    require(job, "bridge_job_required")
+    req = _bridge_var_dir(var_dir) / "bridge" / "jobs" / f"{job}.request.json"
+    require(req.is_file(), "bridge_job_not_found")
+    return {"job": json.loads(req.read_text(encoding="utf-8"))}
+
+
+def bridge_respond(job=None, file=None, text=None, error=None, var_dir=None):
+    require(job, "bridge_job_required")
+    require(sum(1 for v in (file, text, error) if v) == 1, "respond_needs_exactly_one_of_file_text_error")
+    jobs = _bridge_var_dir(var_dir) / "bridge" / "jobs"
+    req = jobs / f"{job}.request.json"
+    require(req.is_file(), "bridge_job_not_found")
+    if error:
+        payload = {"error": str(error)[:1000], "responded": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    else:
+        content = text_file(file) if file else str(text)
+        payload = {"content": content, "responded": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    resp = jobs / f"{job}.response.json"
+    tmp = jobs / f"{job}.response.json.tmp"
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, resp)
+    return {"job": job, "written": len(payload.get("content", "")) + len(payload.get("error", ""))}
+
+
 def parser():
     root = argparse.ArgumentParser(description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)
@@ -746,6 +826,17 @@ def parser():
     p.add_argument("--root", required=True)
     p.add_argument("--config", required=True)
     p.add_argument("--prepared", required=True)
+    for command in ("bridge-pending", "bridge-show", "bridge-respond"):
+        p = commands.add_parser(command)
+        p.add_argument("--var-dir")
+        if command != "bridge-pending":
+            p.add_argument("--job", required=True)
+        if command == "bridge-pending":
+            p.add_argument("--wait", type=float, default=0.0)
+        elif command == "bridge-respond":
+            p.add_argument("--file")
+            p.add_argument("--text")
+            p.add_argument("--error")
     for command in ("confirm", "ask", "action", "input", "commit", "status", "export", "checkpoint",
                     "source-window", "distill", "setup-confirm", "gf-confirm", "card", "cast-confirm",
                     "revise", "context", "plan", "stage", "review", "render", "advance", "doctor", "template"):
@@ -794,7 +885,9 @@ def main(argv=None):
                 "card": preparation.card, "cast-confirm": preparation.cast_confirm,
                 "context": turns.context, "plan": turns.plan, "stage": turns.stage,
                 "review": turns.review, "render": turns.render, "advance": turns.advance,
-                "doctor": guidance.doctor, "template": guidance.template}
+                "doctor": guidance.doctor, "template": guidance.template,
+                "bridge-pending": bridge_pending, "bridge-show": bridge_show,
+                "bridge-respond": bridge_respond}
     try:
         result = dispatch[command](**args)
         # Source windows are exact untrusted data, never transformed or filtered.

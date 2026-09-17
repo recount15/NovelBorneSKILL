@@ -1,6 +1,6 @@
-# 🎮 书中行 · NovelBorne Skill 2.0.0
+# 🎮 书中行 · NovelBorne Skill 2.2.0
 
-将小说 TXT、Markdown 或文本片段变成交互故事：协商配置 → 建立本地局 → 逐窗取证与整理 → 分别确认设定、金手指、人物、开局 → 每幕正文与 A–F 六选项。支持带明确前缀的自由行动。
+将小说 TXT、Markdown 或文本片段变成交互故事。默认以 `FATE_SKILL_BRIDGE=1` 启动原版 NovelBorne 界面，助手经文件桥充当模型智能——零凭据、零 AI 配置，用户在原界面确认设定、开局并游玩；也支持无浏览器的 CLI 会话模式（协商配置 → 逐窗取证 → 分别确认设定、金手指、人物、开局 → 每幕正文与 A–F 六选项）。支持带明确前缀的自由行动。
 
 ## 🚀 中文｜开始使用
 
@@ -24,6 +24,14 @@
 
 建局后每条消息都经 `runtime.py input --text-file`。未知散文不被猜成行动；例如 `我去后窗看看` 会请求明确为 `行动：我去后窗看看`，小写 `a` 不自动改成 `A`。`问答：`/`增补：` 是原引擎剧情问答通路；永久通路开启后，普通规则问题请用 `规则：`。
 
+### GUI 对局模式（默认 · 零凭据）
+
+```text
+cd "<应用目录 novelborne-3.0.1>" && FATE_SKILL_BRIDGE=1 .venv/Scripts/python run_app.py --host 127.0.0.1 --port 21560 --no-browser
+```
+
+浏览器打开 `http://127.0.0.1:21560/` 即原版界面（一个像素不改）。界面发起的全部模型调用落成桥任务，助手用 `runtime.py bridge-pending / bridge-show / bridge-respond` 接答：角色安排师与选项生成卷收严格 JSON，开局核对与回合正文收纯文本（正文不含选项——选项由系统子调用生成）。`FATE_SKILL_BRIDGE=1` 下所有 API Key 门禁放行，界面的"AI 配置"页永远无需填写。
+
 ### v2 的实际保障
 
 - 强化模式必须 fullbook；基础 window 覆盖目标整章。每窗最多2000 Unicode 字符，凭来源回执和逐字引文接受当前助手的整理产物。
@@ -41,7 +49,9 @@ HMAC 用于检测局部误改，不防能读取密钥、替换程序或整个目
 
 ## 🌍 English｜Getting started
 
-NovelBorne Skill **2.0.0** turns user-provided fiction into an interactive story with six A–F choices and explicit free-form action attempts. It requires Python 3.10+, a skill-capable assistant, and local file/command tools. No third-party Python packages, separate model API keys, or upstream web application are required.
+NovelBorne Skill **2.2.0** turns user-provided fiction into an interactive story with six A–F choices and explicit free-form action attempts. It requires Python 3.10+, a skill-capable assistant, and local file/command tools. No third-party Python packages, separate model API keys, or upstream web application are required.
+
+The default play mode launches the **original NovelBorne web UI** with `FATE_SKILL_BRIDGE=1`: every model call the GUI makes becomes a file-based bridge job that the assistant answers via `runtime.py bridge-pending / bridge-show / bridge-respond` (strict JSON for structured sub-calls such as character assignment and options generation; plain narrative text for the opening checklist and turn scenes). Zero credentials, zero "AI 配置" — the assistant *is* the model.
 
 Copy the complete `novelborne` directory into `.agents/skills/` in your workspace (or `~/.agents/skills/` for user-wide installation). Reload skill discovery, attach your text, and ask:
 
@@ -65,7 +75,7 @@ The two original cheat codes retain their exact behavior without new aliases. Th
 - [SKILL.md](SKILL.md): assistant workflow and authority boundaries.
 - [references/runtime-api.md](references/runtime-api.md): commands and exact input shapes; `doctor` explains blockers and `template` emits editable data, without automatic action.
 - [references/setup.md](references/setup.md), [mechanics.md](references/mechanics.md), [workflows.md](references/workflows.md), [security.md](references/security.md): focused operating guidance.
-- `scripts/`: local runtime, preparation, routing, narrative pipeline, guidance and formula helpers.
+- `scripts/`: local runtime, preparation, routing, narrative pipeline, guidance, formula helpers, and the GUI bridge commands (`bridge-pending` / `bridge-show` / `bridge-respond`).
 - [CHANGELOG.md](CHANGELOG.md), [NOTICE.md](NOTICE.md), [LICENSE](LICENSE): changes, adaptation notices and AGPL-3.0-or-later licensing.
 
 ## 验证 / Verification
